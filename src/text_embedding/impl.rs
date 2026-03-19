@@ -71,9 +71,12 @@ impl TextEmbedding {
         let post_processing = TextEmbedding::get_default_pooling_method(&model_name);
 
         let session = Session::builder()?
-            .with_execution_providers(execution_providers)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(threads)?
+            .with_execution_providers(execution_providers)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
             .commit_from_file(model_file_reference)?;
 
         let tokenizer = load_tokenizer_hf_hub(model_repo, max_length)?;
@@ -102,15 +105,20 @@ impl TextEmbedding {
 
         let session = {
             let mut session_builder = Session::builder()?
-                .with_execution_providers(execution_providers)?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(threads)?;
+                .with_execution_providers(execution_providers)
+                .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+                .with_intra_threads(threads)
+                .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?;
 
             for external_initializer_file in model.external_initializers {
-                session_builder = session_builder.with_external_initializer_file_in_memory(
-                    external_initializer_file.file_name,
-                    external_initializer_file.buffer.into(),
-                )?;
+                session_builder = session_builder
+                    .with_external_initializer_file_in_memory(
+                        external_initializer_file.file_name,
+                        external_initializer_file.buffer.into(),
+                    )
+                    .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?;
             }
 
             session_builder.commit_from_memory(&model.onnx_file)?

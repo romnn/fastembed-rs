@@ -84,9 +84,12 @@ impl TextRerank {
         }
 
         let session = Session::builder()?
-            .with_execution_providers(execution_providers)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(threads)?
+            .with_execution_providers(execution_providers)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
             .commit_from_file(model_file_reference)?;
 
         let tokenizer = load_tokenizer_hf_hub(model_repo, max_length)?;
@@ -107,10 +110,13 @@ impl TextRerank {
 
         let threads = available_parallelism()?.get();
 
-        let session = Session::builder()?
-            .with_execution_providers(execution_providers)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(threads)?;
+        let mut session = Session::builder()?
+            .with_execution_providers(execution_providers)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?;
 
         let session = match &model.onnx_source {
             OnnxSource::Memory(bytes) => session.commit_from_memory(bytes)?,

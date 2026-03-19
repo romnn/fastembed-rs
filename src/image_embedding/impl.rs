@@ -60,9 +60,12 @@ impl ImageEmbedding {
             .context(format!("Failed to retrieve {}", model_file_name))?;
 
         let session = Session::builder()?
-            .with_execution_providers(execution_providers)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(threads)?
+            .with_execution_providers(execution_providers)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
             .commit_from_file(model_file_reference)?;
 
         Ok(Self::new(preprocessor, session))
@@ -84,9 +87,12 @@ impl ImageEmbedding {
         let preprocessor = Compose::from_bytes(model.preprocessor_file)?;
 
         let session = Session::builder()?
-            .with_execution_providers(execution_providers)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(threads)?
+            .with_execution_providers(execution_providers)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|err| anyhow::anyhow!("{}", err.to_string()))?
             .commit_from_memory(&model.onnx_file)?;
 
         Ok(Self::new(preprocessor, session))
