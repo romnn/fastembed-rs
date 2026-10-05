@@ -72,6 +72,9 @@
 
 mod common;
 
+/// Fixed tokenizer shapes and session-owned CUDA allocator diagnostics.
+pub mod execution_profile;
+
 mod bgem3_embedding;
 #[cfg(feature = "image-models")]
 mod image_embedding;
