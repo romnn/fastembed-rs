@@ -4,15 +4,12 @@
 use crate::{
     common::{init_session_builder, Error, Result, TokenizerFiles},
     init::{HasMaxLength, InitOptionsWithLength},
-    pooling::Pooling,
-    EmbeddingModel, OutputKey, QuantizationMode,
+    ort_session::ModelSession,
+    EmbeddingModel, OutputKey, Pooling, QuantizationMode,
 };
 use ort::{
-    environment::Environment,
-    ep::ExecutionProviderDispatch,
-    session::{builder::SessionBuilder, Session},
+    environment::Environment, ep::ExecutionProviderDispatch, session::builder::SessionBuilder,
 };
-use tokenizers::Tokenizer;
 
 use super::DEFAULT_MAX_LENGTH;
 
@@ -215,14 +212,25 @@ impl UserDefinedEmbeddingModel {
     }
 }
 
-/// Rust representation of the TextEmbedding model
+/// Rust representation of the TextEmbedding model.
+///
+/// It derefs to the pipeline it runs, whose tokenizer and session it exposes.
 pub struct TextEmbedding {
-    pub tokenizer: Tokenizer,
-    pub(crate) pooling: Option<Pooling>,
-    pub(crate) session: Session,
-    pub(crate) need_token_type_ids: bool,
-    pub(crate) quantization: QuantizationMode,
-    pub(crate) output_key: Option<OutputKey>,
+    pub(crate) pipeline: fastembed_pipeline::TextEmbedding<ModelSession>,
+}
+
+impl std::ops::Deref for TextEmbedding {
+    type Target = fastembed_pipeline::TextEmbedding<ModelSession>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
+
+impl std::ops::DerefMut for TextEmbedding {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pipeline
+    }
 }
 
 #[cfg(test)]

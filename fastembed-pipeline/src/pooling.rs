@@ -1,4 +1,4 @@
-use crate::common::{Error, Result};
+use crate::error::{Error, Result};
 use ndarray::{s, Array2, ArrayView, Dim, Dimension, IxDynImpl};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

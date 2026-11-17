@@ -1,3 +1,4 @@
+use fastembed_pipeline::normalize;
 #[cfg(feature = "hf-hub")]
 use hf_hub::api::sync::ApiRepo;
 use image::DynamicImage;
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 use std::{io::Cursor, path::Path};
 
 use crate::{
-    common::{init_session_builder, normalize, Error, Result},
+    common::{init_session_builder, ort_error, Error, Result},
     models::image_embedding::models_list,
     Embedding, ImageEmbeddingModel, ModelInfo,
 };
@@ -69,7 +70,8 @@ impl ImageEmbedding {
             intra_threads,
             session_config,
         )?
-        .commit_from_file(model_file_reference)?;
+        .commit_from_file(model_file_reference)
+        .map_err(ort_error)?;
 
         Ok(Self::new(preprocessor, session))
     }
@@ -96,7 +98,8 @@ impl ImageEmbedding {
             intra_threads,
             session_config,
         )?
-        .commit_from_memory(&model.onnx_file)?;
+        .commit_from_memory(&model.onnx_file)
+        .map_err(ort_error)?;
 
         Ok(Self::new(preprocessor, session))
     }

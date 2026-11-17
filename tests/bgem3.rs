@@ -11,6 +11,15 @@ use std::sync::{Mutex, OnceLock};
 
 static MODEL_LOCK: Mutex<()> = Mutex::new(());
 const EPS: f32 = 2e-2;
+/// How far the int8 graph's sparse weights may lie from the fp32 model's.
+///
+/// `MatMulInteger` multiplies dynamically quantized `u8` activations by `s8` weights, and ONNX
+/// Runtime's CPU kernels for it differ by instruction set: AVX512-VNNI accumulates exactly, while
+/// AVX2 without VNNI saturates its 16-bit intermediate sums. The int8 weights therefore vary by
+/// machine: for these sentences two x64 machines differ by up to 0.031, while each stays within
+/// 0.025 of the fp32 model. The weights are checked against the fp32 reference, which no kernel
+/// changes, within this bound.
+const INT8_SPARSE_BOUND: f32 = 3e-2;
 
 fn environment() -> Environment {
     static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
@@ -64,33 +73,35 @@ fn test_bgem3_joint_embeddings_match_python() {
     // 2. Verify Sparse Embeddings
     assert_eq!(output.sparse.len(), 2);
 
+    // The fp32 model's weights, from FlagEmbedding: `BGEM3FlagModel('BAAI/bge-m3')`, as
+    // `bgem3_comparison.rs` pins them for the same sentences.
     let expected_sparse_0: HashMap<usize, f32> = [
-        (9, 0.04261402785778046),
-        (71, 0.09023943543434143),
-        (83, 0.08396764099597931),
-        (195, 0.16971012949943542),
-        (1379, 0.10828342288732529),
-        (1430, 0.13637235760688782),
-        (4271, 0.16798287630081177),
-        (4295, 0.2422717958688736),
-        (9795, 0.1467694491147995),
-        (13482, 0.277856707572937),
-        (16655, 0.22456319630146027),
-        (86872, 0.18163326382637024),
+        (9, 0.04153823),
+        (71, 0.08359783),
+        (83, 0.07778944),
+        (195, 0.16260204),
+        (1379, 0.10846229),
+        (1430, 0.15291117),
+        (4271, 0.17456965),
+        (4295, 0.24856839),
+        (9795, 0.1580239),
+        (13482, 0.28582922),
+        (16655, 0.223301),
+        (86872, 0.17708361),
     ]
     .into_iter()
     .collect();
 
     let expected_sparse_1: HashMap<usize, f32> = [
-        (70, 0.15444988012313843),
-        (83, 0.1826561987400055),
-        (111, 0.10440966486930847),
-        (756, 0.1211288720369339),
-        (1601, 0.16578607261180878),
-        (1733, 0.1628011018037796),
-        (2965, 0.24118179082870483),
-        (90865, 0.23467521369457245),
-        (183497, 0.30678409337997437),
+        (70, 0.16743071),
+        (83, 0.19853045),
+        (111, 0.11962792),
+        (756, 0.13541803),
+        (1601, 0.17550871),
+        (1733, 0.18622744),
+        (2965, 0.24451455),
+        (90865, 0.25476876),
+        (183497, 0.32012847),
     ]
     .into_iter()
     .collect();
@@ -105,7 +116,7 @@ fn test_bgem3_joint_embeddings_match_python() {
             .get(idx)
             .expect("Unexpected index in sparse 0");
         assert!(
-            (val - expected_val).abs() < EPS,
+            (val - expected_val).abs() < INT8_SPARSE_BOUND,
             "Sparse 0 index {}: expected {}, got {}",
             idx,
             expected_val,
@@ -123,7 +134,7 @@ fn test_bgem3_joint_embeddings_match_python() {
             .get(idx)
             .expect("Unexpected index in sparse 1");
         assert!(
-            (val - expected_val).abs() < EPS,
+            (val - expected_val).abs() < INT8_SPARSE_BOUND,
             "Sparse 1 index {}: expected {}, got {}",
             idx,
             expected_val,

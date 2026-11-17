@@ -1,10 +1,7 @@
-use ort::session::Session;
-use std::collections::{HashMap, HashSet};
-use tokenizers::Tokenizer;
-
 use crate::{
     init::{HasMaxLength, InitOptionsWithLength},
     models::sparse::SparseModel,
+    ort_session::ModelSession,
     TokenizerFiles,
 };
 
@@ -47,16 +44,23 @@ impl UserDefinedSparseModel {
     }
 }
 
-/// Rust representation of the SparseTextEmbedding model
+/// Rust representation of the SparseTextEmbedding model.
+///
+/// It derefs to the pipeline it runs, whose tokenizer and session it exposes.
 pub struct SparseTextEmbedding {
-    pub tokenizer: Tokenizer,
-    pub(crate) session: Session,
-    pub(crate) need_token_type_ids: bool,
-    pub(crate) model: SparseModel,
-    /// Ids of the tokenizer's special tokens, excluded from every embedding produced by
-    /// the inference-free models.
-    pub(crate) special_token_ids: HashSet<usize>,
-    /// Token id to IDF weight, read from the `idf.json` shipped with inference-free models.
-    /// [`None`] for models which do not have a separate query representation.
-    pub(crate) token_id_to_idf: Option<HashMap<usize, f32>>,
+    pub(crate) pipeline: fastembed_pipeline::SparseTextEmbedding<ModelSession>,
+}
+
+impl std::ops::Deref for SparseTextEmbedding {
+    type Target = fastembed_pipeline::SparseTextEmbedding<ModelSession>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
+
+impl std::ops::DerefMut for SparseTextEmbedding {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pipeline
+    }
 }

@@ -80,8 +80,7 @@ mod bgem3_embedding;
 mod image_embedding;
 mod init;
 mod models;
-pub mod output;
-mod pooling;
+mod ort_session;
 mod reranking;
 pub mod similarity;
 mod sparse_text_embedding;
@@ -89,12 +88,16 @@ mod text_embedding;
 
 pub use ort::ep::ExecutionProviderDispatch;
 
-pub use crate::common::{get_cache_dir, Embedding, Error, Result, SparseEmbedding, TokenizerFiles};
-pub use crate::models::{
-    model_info::ModelInfo, model_info::RerankerModelInfo, quantization::QuantizationMode,
+pub use crate::common::get_cache_dir;
+pub use crate::models::{model_info::ModelInfo, model_info::RerankerModelInfo};
+pub use crate::ort_session::{ModelSession, OrtGraphSession};
+/// The ONNX Runtime-free pipeline every text model here runs around its graph.
+pub use fastembed_pipeline;
+pub use fastembed_pipeline::{
+    output, BoxError, Embedding, EmbeddingOutput, Error, GraphInput, GraphOutput, GraphSession,
+    OutputKey, OutputPrecedence, Pooling, QuantizationMode, Result, SingleBatchOutput,
+    SparseEmbedding, TokenizerFiles,
 };
-pub use crate::output::{EmbeddingOutput, OutputKey, OutputPrecedence, SingleBatchOutput};
-pub use crate::pooling::Pooling;
 
 // For all Embedding
 pub use crate::init::{InitOptions as BaseInitOptions, InitOptionsWithLength};
@@ -103,8 +106,10 @@ pub use crate::models::ModelTrait;
 // For Text Embedding
 pub use crate::models::text_embedding::EmbeddingModel;
 pub use crate::text_embedding::{
-    InitOptionsUserDefined, TextEmbedding, TextInitOptions, UserDefinedEmbeddingModel,
+    ExternalInitializerFile, InitOptionsUserDefined, TextEmbedding, TextInitOptions,
+    UserDefinedEmbeddingModel,
 };
+pub use fastembed_pipeline::UserDefinedGraphEmbeddingModel;
 #[deprecated(note = "use `TextInitOptions` instead")]
 pub type InitOptions = TextInitOptions;
 
@@ -113,6 +118,7 @@ pub use crate::models::sparse::SparseModel;
 pub use crate::sparse_text_embedding::{
     SparseInitOptions, SparseTextEmbedding, UserDefinedSparseModel,
 };
+pub use fastembed_pipeline::{SparseOutput, UserDefinedGraphSparseModel};
 
 // For BGEM3 Joint Embedding
 pub use crate::bgem3_embedding::{
@@ -131,9 +137,10 @@ pub use crate::models::image_embedding::ImageEmbeddingModel;
 // For Reranking
 pub use crate::models::reranking::RerankerModel;
 pub use crate::reranking::{
-    OnnxSource, RerankInitOptions, RerankInitOptionsUserDefined, RerankResult, TextRerank,
+    OnnxSource, RerankInitOptions, RerankInitOptionsUserDefined, TextRerank,
     UserDefinedRerankingModel,
 };
+pub use fastembed_pipeline::{RerankResult, UserDefinedGraphRerankingModel};
 
 // For Qwen3 (candle backend)
 #[cfg(feature = "qwen3")]

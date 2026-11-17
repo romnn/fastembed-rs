@@ -21,6 +21,9 @@ repository = "https://github.com/Anush008/fastembed-rs"
 homepage = "https://crates.io/crates/fastembed"
 include = ["src/**/*", "tests/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
+[workspace]
+members = [".", "fastembed-pipeline"]
+
 [package.metadata.docs.rs]
 features = ["qwen3", "nomic-v2-moe"]
 rustdoc-args = ["--cfg", "docsrs"]
@@ -28,6 +31,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+fastembed-pipeline = { path = "fastembed-pipeline", version = "7.1.4" }
 thiserror = "2"
 hf-hub = { version = "0.5.0", default-features = false, optional = true }
 image = { version = "0.25.10", optional = true }

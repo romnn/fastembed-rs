@@ -1,0 +1,18 @@
+[package]
+name = "fastembed-pipeline"
+version = "7.1.4"
+edition = "2021"
+rust-version = "1.88"
+description = "The ONNX Runtime-free text pipeline of fastembed: tokenization, output selection, pooling and post-processing around a pluggable graph session."
+license = "Apache-2.0"
+documentation = "https://docs.rs/fastembed-pipeline"
+repository = "https://github.com/Anush008/fastembed-rs"
+homepage = "https://crates.io/crates/fastembed"
+include = ["src/**/*", "Cargo.toml"]
+
+[dependencies]
+thiserror = "2"
+ndarray = { version = "0.17.2", default-features = false }
+safetensors = { version = "0.8.0" }
+serde_json = { version = "1" }
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }

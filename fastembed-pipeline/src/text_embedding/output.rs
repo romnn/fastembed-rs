@@ -1,7 +1,8 @@
 //! Output types and functions for the [`TextEmbedding`] model.
 //!
 use crate::{
-    common::{normalize, Embedding, Error, Result},
+    common::{normalize, Embedding},
+    error::{Error, Result},
     output::{OutputKey, OutputPrecedence, SingleBatchOutput},
     pooling::Pooling,
 };

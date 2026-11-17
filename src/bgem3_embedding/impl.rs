@@ -1,7 +1,7 @@
 #[cfg(feature = "hf-hub")]
 use crate::common::{init_session_builder, load_tokenizer_hf_hub};
 use crate::{
-    common::{encode_batch, load_tokenizer, Error, Result},
+    common::{encode_batch, load_tokenizer, ort_error, session_inputs, Error, Result},
     models::bgem3::{models_list, Bgem3Model},
     text_embedding::InitOptionsUserDefined,
     ModelInfo, SparseEmbedding, TokenizerFiles,
@@ -67,7 +67,8 @@ impl Bgem3Embedding {
             intra_threads,
             session_config,
         )?
-        .commit_from_file(model_file_reference)?;
+        .commit_from_file(model_file_reference)
+        .map_err(ort_error)?;
 
         let tokenizer = load_tokenizer_hf_hub(model_repo, max_length)?;
         Ok(Self::new(tokenizer, session, model_name))
@@ -79,7 +80,9 @@ impl Bgem3Embedding {
         options: InitOptionsUserDefined,
     ) -> Result<Self> {
         let (mut session_builder, max_length) = options.into_session_builder()?;
-        let session = session_builder.commit_from_memory(&model.onnx_file)?;
+        let session = session_builder
+            .commit_from_memory(&model.onnx_file)
+            .map_err(ort_error)?;
 
         let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
         Ok(Self::new(tokenizer, session, Bgem3Model::default()))
@@ -102,7 +105,9 @@ impl Bgem3Embedding {
         };
 
         let (mut session_builder, max_length) = options.into_session_builder()?;
-        let session = session_builder.commit_from_file(model_file)?;
+        let session = session_builder
+            .commit_from_file(model_file)
+            .map_err(ort_error)?;
 
         let tokenizer = load_tokenizer(tokenizer_files, max_length)?;
         Ok(Self::new(tokenizer, session, Bgem3Model::default()))
@@ -168,7 +173,7 @@ impl Bgem3Embedding {
         for batch in texts.chunks(batch_size) {
             let inputs = batch.iter().map(|text| text.as_ref()).collect();
             let mut encoded = encode_batch(&self.tokenizer, inputs)?;
-            let session_inputs = encoded.session_inputs(self.need_token_type_ids)?;
+            let session_inputs = session_inputs(&mut encoded, self.need_token_type_ids)?;
             let (current_batch_size, encoding_length) = encoded.input_ids.dim();
             let inputs_ids_array = &encoded.input_ids;
             let attention_mask_array = &encoded.attention_mask;

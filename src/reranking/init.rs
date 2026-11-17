@@ -1,17 +1,32 @@
 use super::DEFAULT_MAX_LENGTH;
 use crate::{
     init::{HasMaxLength, InitOptionsWithLength},
+    ort_session::ModelSession,
     RerankerModel, TokenizerFiles,
 };
-use ort::{environment::Environment, ep::ExecutionProviderDispatch, session::Session};
+use ort::{environment::Environment, ep::ExecutionProviderDispatch};
 use std::path::PathBuf;
-use tokenizers::Tokenizer;
 
+/// Rust representation of the TextRerank model.
+///
+/// It derefs to the pipeline it runs, whose tokenizer and session it exposes.
 #[derive(Debug)]
 pub struct TextRerank {
-    pub tokenizer: Tokenizer,
-    pub(crate) session: Session,
-    pub(crate) need_token_type_ids: bool,
+    pub(crate) pipeline: fastembed_pipeline::TextRerank<ModelSession>,
+}
+
+impl std::ops::Deref for TextRerank {
+    type Target = fastembed_pipeline::TextRerank<ModelSession>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
+
+impl std::ops::DerefMut for TextRerank {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pipeline
+    }
 }
 
 impl HasMaxLength for RerankerModel {
@@ -167,14 +182,6 @@ impl UserDefinedRerankingModel {
             tokenizer_files,
         }
     }
-}
-
-/// Rerank result.
-#[derive(Debug, PartialEq, Clone)]
-pub struct RerankResult {
-    pub document: Option<String>,
-    pub score: f32,
-    pub index: usize,
 }
 
 #[cfg(test)]

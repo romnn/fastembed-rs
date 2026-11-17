@@ -1,8 +1,11 @@
 #![cfg(feature = "hf-hub")]
 #![allow(clippy::excessive_precision)]
 
-use std::path::Path;
-use std::{fs, sync::OnceLock};
+use std::path::PathBuf;
+use std::{
+    fs,
+    sync::{Mutex, OnceLock},
+};
 
 use hf_hub::Repo;
 use ort::environment::Environment;
@@ -24,6 +27,58 @@ fn environment() -> Environment {
 /// A small epsilon value for floating point comparisons.
 const EPS: f32 = 2e-2;
 
+/// A quantized model and the full-precision model it was quantized from.
+///
+/// ONNX Runtime runs quantized graphs' integer matrix products with kernels that differ by
+/// instruction set: AVX512-VNNI accumulates exactly, AVX2 without VNNI saturates 16-bit sums, and
+/// 4-bit blocks dequantize per platform. A quantized model's output therefore varies by machine,
+/// by more than [`EPS`] in the embedding sums `verify_embeddings` pins, so it is checked against
+/// its full-precision model instead, whose output no such kernel changes.
+struct QuantizedVariant {
+    full_precision: EmbeddingModel,
+    /// The least cosine similarity each embedding keeps to the full-precision model's embedding
+    /// of the same text: the least measured on an AVX512-VNNI x64 machine with ONNX Runtime 1.31,
+    /// less 0.03 for other kernels, rounded down.
+    min_cosine: f32,
+}
+
+fn quantized_variant(model: &EmbeddingModel) -> Option<QuantizedVariant> {
+    let (full_precision, min_cosine) = match model {
+        EmbeddingModel::AllMiniLML6V2Q => (EmbeddingModel::AllMiniLML6V2, 0.95),
+        EmbeddingModel::AllMiniLML12V2Q => (EmbeddingModel::AllMiniLML12V2, 0.95),
+        EmbeddingModel::BGEBaseENV15Q => (EmbeddingModel::BGEBaseENV15, 0.96),
+        EmbeddingModel::BGELargeENV15Q => (EmbeddingModel::BGELargeENV15, 0.96),
+        EmbeddingModel::BGESmallENV15Q => (EmbeddingModel::BGESmallENV15, 0.96),
+        EmbeddingModel::GTEBaseENV15Q => (EmbeddingModel::GTEBaseENV15, 0.93),
+        // The int8 GTE large keeps a cosine of only 0.79 to 0.90 on these texts.
+        EmbeddingModel::GTELargeENV15Q => (EmbeddingModel::GTELargeENV15, 0.76),
+        EmbeddingModel::MxbaiEmbedLargeV1Q => (EmbeddingModel::MxbaiEmbedLargeV1, 0.95),
+        EmbeddingModel::NomicEmbedTextV15Q => (EmbeddingModel::NomicEmbedTextV15, 0.92),
+        EmbeddingModel::ParaphraseMLMiniLML12V2Q => (EmbeddingModel::ParaphraseMLMiniLML12V2, 0.96),
+        EmbeddingModel::EmbeddingGemma300MQ4 => (EmbeddingModel::EmbeddingGemma300M, 0.93),
+        EmbeddingModel::EmbeddingGemma300MQ => (EmbeddingModel::EmbeddingGemma300M, 0.96),
+        EmbeddingModel::SnowflakeArcticEmbedXSQ => (EmbeddingModel::SnowflakeArcticEmbedXS, 0.96),
+        EmbeddingModel::SnowflakeArcticEmbedSQ => (EmbeddingModel::SnowflakeArcticEmbedS, 0.96),
+        EmbeddingModel::SnowflakeArcticEmbedMQ => (EmbeddingModel::SnowflakeArcticEmbedM, 0.96),
+        EmbeddingModel::SnowflakeArcticEmbedMLongQ => {
+            (EmbeddingModel::SnowflakeArcticEmbedMLong, 0.95)
+        }
+        EmbeddingModel::SnowflakeArcticEmbedLQ => (EmbeddingModel::SnowflakeArcticEmbedL, 0.96),
+        _ => return None,
+    };
+    Some(QuantizedVariant {
+        full_precision,
+        min_cosine,
+    })
+}
+
+/// The cosine similarity of two embeddings.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm(a) * norm(b))
+}
+
 /// Precalculated embeddings for the supported models using #99
 /// (4f09b6842ce1fcfaf6362678afcad9a176e05304).
 ///
@@ -43,51 +98,34 @@ const EPS: f32 = 2e-2;
 fn verify_embeddings(model: &EmbeddingModel, embeddings: &[Embedding]) -> Result<(), Vec<usize>> {
     let expected = match model {
         EmbeddingModel::AllMiniLML12V2 => [-0.12147753, 0.30144796, -0.06882502, -0.6303331],
-        EmbeddingModel::AllMiniLML12V2Q => [-0.07808663, 0.27919534, -0.0770612, -0.75660324],
         EmbeddingModel::AllMiniLML6V2 => [0.59605527, 0.36542925, -0.16450031, -0.40903988],
-        EmbeddingModel::AllMiniLML6V2Q => [0.5677276, 0.40180072, -0.15454668, -0.4672576],
         EmbeddingModel::AllMpnetBaseV2 => [-0.21253541, -0.050802127, 0.14072442, -0.2908188],
         EmbeddingModel::BGEBaseENV15 => [-0.51290065, -0.4844747, -0.53036124, -0.5337459],
-        EmbeddingModel::BGEBaseENV15Q => [-0.5130697, -0.48461288, -0.53067875, -0.5337806],
         EmbeddingModel::BGELargeENV15 => [-0.19347441, -0.28394595, -0.1549195, -0.22201893],
-        EmbeddingModel::BGELargeENV15Q => [-0.19366685, -0.2842059, -0.15471499, -0.22216901],
         EmbeddingModel::BGESmallENV15 => [0.09881669, 0.15151203, 0.12057499, 0.13641948],
-        EmbeddingModel::BGESmallENV15Q => [0.09881936, 0.15154803, 0.12057378, 0.13639033],
         EmbeddingModel::BGESmallZHV15 => [-1.1194772, -1.0928253, -1.0325904, -1.0050416],
         EmbeddingModel::BGELargeZHV15 => [-0.62066114, -0.76666945, -0.7013123, -0.86202735],
         EmbeddingModel::BGEM3 => [-0.7138151, -0.69116485, -0.7932898, -0.6727733],
         EmbeddingModel::GTEBaseENV15 => [-1.6900877, -1.7148916, -1.7333382, -1.5121834],
-        EmbeddingModel::GTEBaseENV15Q => [-1.7032102, -1.7076654, -1.729326, -1.5317788],
         EmbeddingModel::GTELargeENV15 => [-1.6457459, -1.6582386, -1.6809471, -1.6070237],
-        EmbeddingModel::GTELargeENV15Q => [-1.6044945, -1.6469251, -1.6828246, -1.6265479],
         EmbeddingModel::ModernBertEmbedLarge => [ 0.24799639, 0.32174295, 0.17255782, 0.32919246],
         EmbeddingModel::MultilingualE5Base => [-0.057211064, -0.14287914, -0.071678676, -0.17549144],
         EmbeddingModel::MultilingualE5Large => [-0.7473163, -0.76040405, -0.7537941, -0.72920954],
         EmbeddingModel::MultilingualE5Small => [-0.2640718, -0.13929011, -0.08091972, -0.12388548],
         EmbeddingModel::MxbaiEmbedLargeV1 => [-0.2032495, -0.29803938, -0.15803768, -0.23155808],
-        EmbeddingModel::MxbaiEmbedLargeV1Q => [-0.1811538, -0.2884392, -0.1636593, -0.21548103],
         EmbeddingModel::NomicEmbedTextV1 => [0.13788113, 0.10750078, 0.050809078, 0.09284662],
         EmbeddingModel::NomicEmbedTextV15 => [0.1932303, 0.13795732, 0.14700879, 0.14940643],
-        EmbeddingModel::NomicEmbedTextV15Q => [0.20999804, 0.17161125, 0.15987156, 0.19436662],
         EmbeddingModel::ParaphraseMLMiniLML12V2 => [-0.07795018, -0.059113946, -0.043668486, -0.1880083],
-        EmbeddingModel::ParaphraseMLMiniLML12V2Q => [-0.07749095, -0.058981877, -0.043487836, -0.18775631],
         EmbeddingModel::ParaphraseMLMpnetBaseV2 => [0.39132136, 0.49490625, 0.65497226, 0.34237382],
         EmbeddingModel::ClipVitB32 => [0.7057363, 1.3549932, 0.46823958, 0.52351093],
         EmbeddingModel::JinaEmbeddingsV2BaseCode => [-0.31383067, -0.3758629, -0.24878195, -0.35373706],
         EmbeddingModel::JinaEmbeddingsV2BaseEN => [-0.055866606, -0.033922599, 0.012131551, -0.0132129812],
         EmbeddingModel::EmbeddingGemma300M => [0.22703816, 0.6947083, 0.07579082, 1.6958784],
-        EmbeddingModel::EmbeddingGemma300MQ4 => [0.3110208, 0.6683019, 0.38347214, 1.787025],
-        EmbeddingModel::EmbeddingGemma300MQ => [0.11791767, 0.34993136, -0.018153993, 1.4971508],
         EmbeddingModel::SnowflakeArcticEmbedXS => [0.4418098, 0.46424747, 0.37932625, 0.44663674],
-        EmbeddingModel::SnowflakeArcticEmbedXSQ => [0.45034444, 0.46853474, 0.38483432, 0.44833523],
         EmbeddingModel::SnowflakeArcticEmbedS => [-0.64302516, -0.63146704, -0.57860875, -0.5829098],
-        EmbeddingModel::SnowflakeArcticEmbedSQ => [-0.63687235, -0.6296427, -0.6070188, -0.57358015],
         EmbeddingModel::SnowflakeArcticEmbedM => [-0.16999032, -0.109130904, -0.016444799, -0.108033374],
-        EmbeddingModel::SnowflakeArcticEmbedMQ => [-0.15008105, -0.11513549, 0.00008662231, -0.08609233],
         EmbeddingModel::SnowflakeArcticEmbedMLong => [0.20396729, 0.18245143, 0.13489585, 0.15486401],
-        EmbeddingModel::SnowflakeArcticEmbedMLongQ => [0.20531628, 0.18564843, 0.14221531, 0.16035447],
         EmbeddingModel::SnowflakeArcticEmbedL => [0.4049112, 0.42825335, 0.46401042, 0.4064963],
-        EmbeddingModel::SnowflakeArcticEmbedLQ => [0.40164998, 0.4278314, 0.4612437, 0.40060186],
         _ => panic!("Model {model} not found. If you have just inserted this `EmbeddingModel` variant, please update the expected embeddings."),
     };
 
@@ -162,18 +200,37 @@ macro_rules! create_embeddings_test {
                             assert_eq!(embedding.len(), supported_model.dim);
                         }
 
-                        match verify_embeddings(&supported_model.model, &embeddings) {
-                            Ok(_) => {}
-                            Err(mismatched_indices) => {
-                                panic!(
-                                    "Mismatched embeddings for model {model}: {sentences:?}",
+                        if let Some(QuantizedVariant { full_precision, min_cosine }) =
+                            quantized_variant(&supported_model.model)
+                        {
+                            let reference = TextEmbedding::try_new(
+                                TextInitOptions::new(full_precision.clone())
+                                    .with_environment(environment()),
+                            )
+                            .unwrap()
+                            .embed(documents.clone(), batch_size)
+                            .unwrap();
+                            for (document, (embedding, reference)) in
+                                documents.iter().zip(embeddings.iter().zip(&reference))
+                            {
+                                let similarity = cosine(embedding, reference);
+                                assert!(
+                                    similarity >= min_cosine,
+                                    "{model} embeds {document:?} at cosine {similarity} to {full_precision}, below {min_cosine}",
                                     model = supported_model.model,
-                                    sentences = &mismatched_indices
-                                        .iter()
-                                        .map(|&i| documents[i])
-                                        .collect::<Vec<_>>()
                                 );
                             }
+                        } else if let Err(mismatched_indices) =
+                            verify_embeddings(&supported_model.model, &embeddings)
+                        {
+                            panic!(
+                                "Mismatched embeddings for model {model}: {sentences:?}",
+                                model = supported_model.model,
+                                sentences = &mismatched_indices
+                                    .iter()
+                                    .map(|&i| documents[i])
+                                    .collect::<Vec<_>>()
+                            );
                         }
                     }
                 });
@@ -245,7 +302,7 @@ fn test_user_defined_embedding_model() {
 
     // Get the directory of the model
     let model_name = test_model_info.model_code.replace('/', "--");
-    let model_dir = Path::new(&get_cache_dir()).join(format!("models--{}", model_name));
+    let model_dir = model_cache_dir().join(format!("models--{}", model_name));
 
     // Find the "snapshots" sub-directory
     let snapshots_dir = model_dir.join("snapshots");
@@ -320,8 +377,13 @@ fn test_user_defined_embedding_model() {
     }
 }
 
+/// Held by the tests that use the reranker cache, which `test_rerank` clears on CI while another
+/// test may read a model from it.
+static RERANKER_CACHE: Mutex<()> = Mutex::new(());
+
 #[test]
 fn test_rerank() {
+    let _cache = RERANKER_CACHE.lock().unwrap_or_else(|err| err.into_inner());
     let test_one_model = |supported_model: &RerankerModelInfo| {
         println!("supported_model: {:?}", supported_model);
 
@@ -366,7 +428,9 @@ fn test_rerank() {
         );
 
         // Clear the model cache to avoid running out of space on GitHub Actions.
-        clean_cache(supported_model.model_code.clone())
+        if std::env::var("CI").is_ok() {
+            clean_cache(supported_model.model_code.clone())
+        }
     };
     TextRerank::list_supported_models()
         .iter()
@@ -428,6 +492,7 @@ fn test_user_defined_reranking_large_model() {
 
 #[test]
 fn test_user_defined_reranking_model() {
+    let _cache = RERANKER_CACHE.lock().unwrap_or_else(|err| err.into_inner());
     // Constitute the model in order to ensure it's downloaded and cached
     let test_model_info: fastembed::RerankerModelInfo =
         TextRerank::get_model_info(&RerankerModel::JINARerankerV1TurboEn);
@@ -439,7 +504,7 @@ fn test_user_defined_reranking_model() {
 
     // Get the directory of the model
     let model_name = test_model_info.model_code.replace('/', "--");
-    let model_dir = Path::new(&get_cache_dir()).join(format!("models--{}", model_name));
+    let model_dir = model_cache_dir().join(format!("models--{}", model_name));
 
     // Find the "snapshots" sub-directory
     let snapshots_dir = model_dir.join("snapshots");
@@ -513,10 +578,17 @@ fn test_user_defined_reranking_model() {
     assert_eq!(results.first().unwrap().index, 0);
 }
 
+/// The directory fastembed downloads models into: `HF_HOME` when it is set, as fastembed's Hub
+/// client prefers it, and the fastembed cache directory otherwise.
+fn model_cache_dir() -> PathBuf {
+    std::env::var_os("HF_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(get_cache_dir()))
+}
+
 fn clean_cache(model_code: String) {
     let repo = Repo::model(model_code);
-    let cache_dir = format!("{}/{}", get_cache_dir(), repo.folder_name());
-    fs::remove_dir_all(cache_dir).ok();
+    fs::remove_dir_all(model_cache_dir().join(repo.folder_name())).ok();
 }
 
 // This is item "test-environment-aeghhgwpe-pro02a" of the [Aguana corpus](http://argumentation.bplaced.net/arguana/data)
@@ -611,22 +683,22 @@ fn test_allminilml6v2_match_python_counterpart() {
 
     let text = get_sample_text();
 
-    // baseline is generated in python using qdrant/all-mini-lm-l6-v2.onnx
-    // Tokenizer with python SentenceTransformer("all-mini-lm-l6-v2") default tokenizer
-    // with (text, padding="max_length",max_length=384,truncation=True, return_tensors="np").
-    // Normalized and pooled with SentenceTransformer("all-mini-lm-l6-v2") default pooling settings.
-    // We only take 10 items to keep the test file small.
+    // The model's tokenizer declares `model_max_length` 256, which caps the requested 384, so the
+    // text is truncated at 256 tokens. The baseline is generated in Python by
+    // `tests/assets/allminilml6v2_baseline.py`: the same graph through onnxruntime, the tokenizer
+    // truncating at 256 tokens, mean pooling and normalization. We only take 10 items to keep the
+    // test file small.
     let baseline: Vec<f32> = vec![
-        3.510_517_6e-2,
-        1.046_043e-2,
-        3.767_998_5e-2,
-        7.073_633_4e-2,
-        9.097_775e-2,
-        -2.507_714_7e-2,
-        -2.214_382e-2,
-        -1.016_435_9e-2,
-        4.660_127_3e-2,
-        7.431_366e-2,
+        2.613_225_6e-2,
+        4.206_722_4e-2,
+        5.250_315_7e-2,
+        7.876_658_1e-2,
+        4.569_452_4e-2,
+        2.103_072_1e-3,
+        -2.805_862_1e-2,
+        -2.223_154_5e-2,
+        2.083_955_5e-3,
+        2.926_191_8e-2,
     ];
 
     let embeddings = model.embed(vec![text], None).expect("create successfully");

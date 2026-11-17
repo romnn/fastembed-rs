@@ -1,32 +1,21 @@
 #[cfg(feature = "hf-hub")]
-use crate::common::load_tokenizer_hf_hub;
+use crate::common::tokenizer_files_hf_hub;
 use crate::{
-    common::{encode_batch, init_session_builder, load_tokenizer, Error, Result},
+    common::{init_session_builder, ort_error, Error, Result},
     models::reranking::reranker_model_list,
-    RerankerModel, RerankerModelInfo,
+    ort_session::ModelSession,
+    GraphSession, RerankResult, RerankerModel, RerankerModelInfo, UserDefinedGraphRerankingModel,
 };
-use ndarray::s;
-use ort::session::Session;
-use tokenizers::Tokenizer;
 
 #[cfg(feature = "hf-hub")]
 use super::RerankInitOptions;
-use super::{
-    OnnxSource, RerankInitOptionsUserDefined, RerankResult, TextRerank, UserDefinedRerankingModel,
-    DEFAULT_BATCH_SIZE,
-};
+use super::{OnnxSource, RerankInitOptionsUserDefined, TextRerank, UserDefinedRerankingModel};
 
 impl TextRerank {
-    fn new(tokenizer: Tokenizer, session: Session) -> Self {
-        let need_token_type_ids = session
-            .inputs()
-            .iter()
-            .any(|input| input.name() == "token_type_ids");
-        Self {
-            tokenizer,
-            session,
-            need_token_type_ids,
-        }
+    fn new(session: ModelSession, model: UserDefinedGraphRerankingModel) -> Result<Self> {
+        Ok(Self {
+            pipeline: fastembed_pipeline::TextRerank::try_new_from_graph_session(session, model)?,
+        })
     }
 
     pub fn get_model_info(model: &RerankerModel) -> RerankerModelInfo {
@@ -81,10 +70,12 @@ impl TextRerank {
             intra_threads,
             session_config,
         )?
-        .commit_from_file(model_file_reference)?;
+        .commit_from_file(model_file_reference)
+        .map_err(ort_error)?;
 
-        let tokenizer = load_tokenizer_hf_hub(model_repo, max_length)?;
-        Ok(Self::new(tokenizer, session))
+        let model = UserDefinedGraphRerankingModel::new(tokenizer_files_hf_hub(&model_repo)?)
+            .with_max_length(max_length);
+        Self::new(ModelSession::ort(session), model)
     }
 
     /// Create a TextRerank instance from model files provided by the user.
@@ -124,12 +115,30 @@ impl TextRerank {
                 .map_err(builder_error)?;
         }
         let session = match &model.onnx_source {
-            OnnxSource::Memory(bytes) => session_builder.commit_from_memory(bytes)?,
-            OnnxSource::File(path) => session_builder.commit_from_file(path)?,
-        };
+            OnnxSource::Memory(bytes) => session_builder.commit_from_memory(bytes),
+            OnnxSource::File(path) => session_builder.commit_from_file(path),
+        }
+        .map_err(ort_error)?;
 
-        let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
-        Ok(Self::new(tokenizer, session))
+        let model =
+            UserDefinedGraphRerankingModel::new(model.tokenizer_files).with_max_length(max_length);
+        Self::new(ModelSession::ort(session), model)
+    }
+
+    /// Create a TextRerank instance whose graph runs through a caller-supplied session.
+    ///
+    /// Tokenization, batching and scoring behave exactly as for
+    /// [`TextRerank::try_new_from_user_defined`]; only the graph call goes to `session`, which
+    /// must return a `[batch, n]` `logits` output whose first column holds the scores.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tokenizer files cannot be loaded.
+    pub fn try_new_from_graph_session(
+        session: Box<dyn GraphSession>,
+        model: UserDefinedGraphRerankingModel,
+    ) -> Result<Self> {
+        Self::new(ModelSession::Graph(session), model)
     }
 
     /// Rerank documents using the reranker model and returns the results sorted by score in descending order.
@@ -142,48 +151,7 @@ impl TextRerank {
         return_documents: bool,
         batch_size: Option<usize>,
     ) -> Result<Vec<RerankResult>> {
-        let documents = documents.as_ref();
-        let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
-        if batch_size == 0 {
-            return Err(Error::InvalidArgument(
-                "batch_size must be greater than 0".into(),
-            ));
-        }
-        let q = query.as_ref();
-
-        let mut scores: Vec<f32> = Vec::with_capacity(documents.len());
-        for batch in documents.chunks(batch_size) {
-            let inputs = batch.iter().map(|d| (q, d.as_ref())).collect();
-            let mut encoded = encode_batch(&self.tokenizer, inputs)?;
-            let session_inputs = encoded.session_inputs(self.need_token_type_ids)?;
-
-            let outputs = self
-                .session
-                .run(session_inputs)
-                .map_err(|e| Error::OrtSession(e.to_string()))?;
-            let outputs = outputs
-                .get("logits")
-                .ok_or_else(|| Error::OutputKeyMissing {
-                    key: "logits".into(),
-                })?
-                .try_extract_array::<f32>()
-                .map_err(|e| {
-                    Error::TensorExtraction(format!("Failed to extract logits tensor: {e}"))
-                })?;
-            scores.extend(outputs.slice(s![.., 0]).iter().copied());
-        }
-
-        // Return top_n_result of type Vec<RerankResult> ordered by score in descending order, don't use binary heap
-        let mut top_n_result: Vec<RerankResult> = scores
-            .into_iter()
-            .enumerate()
-            .map(|(index, score)| RerankResult {
-                document: return_documents.then(|| documents[index].as_ref().to_string()),
-                score,
-                index,
-            })
-            .collect();
-        top_n_result.sort_by(|a, b| a.score.total_cmp(&b.score).reverse());
-        Ok(top_n_result)
+        self.pipeline
+            .rerank(query, documents, return_documents, batch_size)
     }
 }

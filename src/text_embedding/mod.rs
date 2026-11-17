@@ -2,11 +2,7 @@
 //! initialization options.
 
 // Constants.
-const DEFAULT_BATCH_SIZE: usize = 256;
 const DEFAULT_MAX_LENGTH: usize = 512;
-
-// Output precedence and transforming functions.
-pub mod output;
 
 // Initialization options.
 mod init;

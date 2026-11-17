@@ -1,26 +1,22 @@
 //! The definition of the main struct for text embeddings - [`TextEmbedding`].
 
 #[cfg(feature = "hf-hub")]
-use crate::common::{init_session_builder, load_tokenizer_hf_hub};
+use crate::common::{init_session_builder, ort_error, tokenizer_files_hf_hub};
 use crate::{
-    common::{encode_batch, load_tokenizer, Error, Result},
+    common::{Error, Result},
     models::{text_embedding::models_list, ModelTrait},
-    pooling::Pooling,
-    Embedding, EmbeddingModel, EmbeddingOutput, ModelInfo, OutputKey, QuantizationMode,
-    SingleBatchOutput,
+    ort_session::{ModelSession, OrtGraphSession},
+    Embedding, EmbeddingModel, EmbeddingOutput, GraphSession, ModelInfo, Pooling, QuantizationMode,
+    UserDefinedGraphEmbeddingModel,
 };
 #[cfg(feature = "hf-hub")]
 use hf_hub::api::sync::ApiRepo;
-use ort::session::Session;
 #[cfg(feature = "hf-hub")]
 use std::path::PathBuf;
-use tokenizers::Tokenizer;
 
 #[cfg(feature = "hf-hub")]
 use super::TextInitOptions;
-use super::{
-    output, InitOptionsUserDefined, TextEmbedding, UserDefinedEmbeddingModel, DEFAULT_BATCH_SIZE,
-};
+use super::{InitOptionsUserDefined, TextEmbedding, UserDefinedEmbeddingModel};
 
 impl TextEmbedding {
     /// Try to generate a new TextEmbedding Instance
@@ -73,16 +69,15 @@ impl TextEmbedding {
             intra_threads,
             session_config,
         )?
-        .commit_from_file(model_file_reference)?;
+        .commit_from_file(model_file_reference)
+        .map_err(ort_error)?;
 
-        let tokenizer = load_tokenizer_hf_hub(model_repo, max_length)?;
-        Ok(Self::new(
-            tokenizer,
-            session,
-            post_processing,
-            TextEmbedding::get_quantization_mode(&model_name),
-            model_info.output_key.clone(),
-        ))
+        let mut model = UserDefinedGraphEmbeddingModel::new(tokenizer_files_hf_hub(&model_repo)?)
+            .with_quantization(TextEmbedding::get_quantization_mode(&model_name))
+            .with_max_length(max_length);
+        model.pooling = post_processing;
+        model.output_key = model_info.output_key.clone();
+        Self::new(ModelSession::ort(session), model)
     }
 
     /// Create a TextEmbedding instance from model files provided by the user.
@@ -92,49 +87,47 @@ impl TextEmbedding {
         model: UserDefinedEmbeddingModel,
         options: InitOptionsUserDefined,
     ) -> Result<Self> {
-        let (mut session_builder, max_length) = options.into_session_builder()?;
-        for external_initializer_file in model.external_initializers {
-            session_builder = session_builder
-                .with_external_initializer_file_in_memory(
-                    external_initializer_file.file_name,
-                    external_initializer_file.buffer.into(),
-                )
-                .map_err(|err| Error::OrtBuilder(err.to_string()))?;
-        }
-        let session = session_builder.commit_from_memory(&model.onnx_file)?;
-
-        let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
-        Ok(Self::new(
-            tokenizer,
-            session,
-            model.pooling,
-            model.quantization,
-            model.output_key,
-        ))
-    }
-
-    /// Private method to return an instance
-    fn new(
-        tokenizer: Tokenizer,
-        session: Session,
-        post_process: Option<Pooling>,
-        quantization: QuantizationMode,
-        output_key: Option<OutputKey>,
-    ) -> Self {
-        let need_token_type_ids = session
-            .inputs()
-            .iter()
-            .any(|input| input.name() == "token_type_ids");
-
-        Self {
-            tokenizer,
-            session,
-            need_token_type_ids,
-            pooling: post_process,
+        let UserDefinedEmbeddingModel {
+            onnx_file,
+            external_initializers,
+            tokenizer_files,
+            pooling,
             quantization,
             output_key,
-        }
+        } = model;
+        let max_length = options.max_length;
+        let session = OrtGraphSession::from_memory(&onnx_file, external_initializers, options)?;
+        let mut model = UserDefinedGraphEmbeddingModel::new(tokenizer_files)
+            .with_quantization(quantization)
+            .with_max_length(max_length);
+        model.pooling = pooling;
+        model.output_key = output_key;
+        Self::new(ModelSession::Ort(session), model)
     }
+
+    /// Create a TextEmbedding instance whose graph runs through a caller-supplied session.
+    ///
+    /// Tokenization, batching, output selection, pooling and normalization behave exactly as
+    /// for [`TextEmbedding::try_new_from_user_defined`]; only the graph call goes to `session`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tokenizer files cannot be loaded.
+    pub fn try_new_from_graph_session(
+        session: Box<dyn GraphSession>,
+        model: UserDefinedGraphEmbeddingModel,
+    ) -> Result<Self> {
+        Self::new(ModelSession::Graph(session), model)
+    }
+
+    fn new(session: ModelSession, model: UserDefinedGraphEmbeddingModel) -> Result<Self> {
+        Ok(Self {
+            pipeline: fastembed_pipeline::TextEmbedding::try_new_from_graph_session(
+                session, model,
+            )?,
+        })
+    }
+
     /// Return the TextEmbedding model's directory from cache or remote retrieval
     #[cfg(feature = "hf-hub")]
     fn retrieve_model(
@@ -317,58 +310,7 @@ impl TextEmbedding {
         texts: impl AsRef<[S]>,
         batch_size: Option<usize>,
     ) -> Result<EmbeddingOutput> {
-        let texts = texts.as_ref();
-        // Determine the batch size according to the quantization method used.
-        // Default if not specified
-        let batch_size = match self.quantization {
-            QuantizationMode::Dynamic => {
-                if let Some(batch_size) = batch_size {
-                    if batch_size < texts.len() {
-                        Err(Error::InvalidArgument(
-                            "Dynamic quantization cannot be used with batching. \
-                            This is due to the dynamic quantization process adjusting \
-                            the data range to fit each batch, making the embeddings \
-                            incompatible across batches. Try specifying a batch size \
-                            of `None`, or use a model with static or no quantization."
-                                .into(),
-                        ))
-                    } else {
-                        Ok(texts.len())
-                    }
-                } else {
-                    Ok(texts.len())
-                }
-            }
-            _ => Ok(batch_size.unwrap_or(DEFAULT_BATCH_SIZE)),
-        }?;
-        if batch_size == 0 {
-            return Err(Error::InvalidArgument(
-                "batch_size must be greater than 0".into(),
-            ));
-        }
-
-        let batches = texts
-            .chunks(batch_size)
-            .map(|batch| {
-                let inputs = batch.iter().map(|text| text.as_ref()).collect();
-                let mut encoded = encode_batch(&self.tokenizer, inputs)?;
-                let session_inputs = encoded.session_inputs(self.need_token_type_ids)?;
-
-                let outputs_map = self
-                    .session
-                    .run(session_inputs)
-                    .map_err(|e| Error::OrtSession(e.to_string()))?
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect();
-                Ok(SingleBatchOutput {
-                    outputs: outputs_map,
-                    attention_mask_array: encoded.attention_mask,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(EmbeddingOutput::new(batches))
+        self.pipeline.transform(texts, batch_size)
     }
 
     /// Method to generate sentence embeddings for a collection of texts.
@@ -387,18 +329,7 @@ impl TextEmbedding {
         texts: impl AsRef<[S]>,
         batch_size: Option<usize>,
     ) -> Result<Vec<Embedding>> {
-        let batches = self.transform(texts.as_ref(), batch_size)?;
-        if let Some(output_key) = &self.output_key {
-            batches.export_with_transformer(output::transformer_with_precedence(
-                output_key,
-                self.pooling.clone(),
-            ))
-        } else {
-            batches.export_with_transformer(output::transformer_with_precedence(
-                output::OUTPUT_TYPE_PRECEDENCE,
-                self.pooling.clone(),
-            ))
-        }
+        self.pipeline.embed(texts, batch_size)
     }
 }
 

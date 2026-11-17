@@ -1,6 +1,7 @@
 use ndarray::{Array2, ArrayView, Dim, IxDynImpl};
 
-use crate::common::{Error, Result};
+use crate::error::{Error, Result};
+use crate::graph_session::GraphOutput;
 use crate::pooling;
 
 use super::{OutputKey, OutputPrecedence};
@@ -11,7 +12,8 @@ use super::{OutputKey, OutputPrecedence};
 /// pooling etc. This struct should contain all the necessary information for the
 /// post-processing to be performed.
 pub struct SingleBatchOutput {
-    pub outputs: Vec<(String, ort::value::Value)>,
+    /// Every graph output of the batch, in graph order.
+    pub outputs: Vec<GraphOutput>,
     pub attention_mask_array: Array2<i64>,
 }
 
@@ -24,30 +26,31 @@ impl SingleBatchOutput {
         &self,
         precedence: &impl OutputPrecedence,
     ) -> Result<ArrayView<'_, f32, Dim<IxDynImpl>>> {
-        let ort_output: &ort::value::Value = precedence
+        let output: &GraphOutput = precedence
             .key_precedence()
             .find_map(|key| match key {
                 // Only select the sole output if and only if there is exactly one.
                 OutputKey::OnlyOne => {
                     if self.outputs.len() == 1 {
-                        self.outputs.first().map(|(_, v)| v)
+                        self.outputs.first()
                     } else {
                         None
                     }
                 }
-                OutputKey::ByOrder(idx) => self.outputs.get(*idx).map(|(_, v)| v),
-                OutputKey::ByName(name) => {
-                    self.outputs.iter().find(|(n, _)| n == name).map(|(_, v)| v)
-                }
+                OutputKey::ByOrder(idx) => self.outputs.get(*idx),
+                OutputKey::ByName(name) => self.outputs.iter().find(|output| output.name == *name),
             })
             .ok_or_else(|| {
                 Error::Other(format!(
                     "No suitable output found in the outputs. Available outputs: {:?}",
-                    self.outputs.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                    self.outputs
+                        .iter()
+                        .map(|output| &output.name)
+                        .collect::<Vec<_>>()
                 ))
             })?;
 
-        ort_output.try_extract_array().map_err(Error::from)
+        Ok(output.tensor.view())
     }
 
     /// Select the output from the session outputs based on the given precedence and pool it.
