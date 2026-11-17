@@ -12,6 +12,8 @@ pub struct TextRerank {
     pub tokenizer: Tokenizer,
     pub(crate) session: Session,
     pub(crate) need_token_type_ids: bool,
+    /// Run configuration every run of the session takes; see `set_run_config`.
+    pub(crate) run_options: Option<crate::execution_profile::RunConfig>,
 }
 
 impl HasMaxLength for RerankerModel {

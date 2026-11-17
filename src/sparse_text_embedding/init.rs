@@ -59,4 +59,6 @@ pub struct SparseTextEmbedding {
     /// Token id to IDF weight, read from the `idf.json` shipped with inference-free models.
     /// [`None`] for models which do not have a separate query representation.
     pub(crate) token_id_to_idf: Option<HashMap<usize, f32>>,
+    /// Run configuration every run of the session takes; see `set_run_config`.
+    pub(crate) run_options: Option<crate::execution_profile::RunConfig>,
 }

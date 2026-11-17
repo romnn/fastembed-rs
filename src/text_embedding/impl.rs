@@ -133,6 +133,7 @@ impl TextEmbedding {
             pooling: post_process,
             quantization,
             output_key,
+            run_options: None,
         }
     }
     /// Return the TextEmbedding model's directory from cache or remote retrieval
@@ -354,13 +355,14 @@ impl TextEmbedding {
                 let mut encoded = encode_batch(&self.tokenizer, inputs)?;
                 let session_inputs = encoded.session_inputs(self.need_token_type_ids)?;
 
-                let outputs_map = self
-                    .session
-                    .run(session_inputs)
-                    .map_err(|e| Error::OrtSession(e.to_string()))?
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect();
+                let outputs_map = match &self.run_options {
+                    Some(config) => self.session.run_with_options(session_inputs, &config.0),
+                    None => self.session.run(session_inputs),
+                }
+                .map_err(|e| Error::OrtSession(e.to_string()))?
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
                 Ok(SingleBatchOutput {
                     outputs: outputs_map,
                     attention_mask_array: encoded.attention_mask,

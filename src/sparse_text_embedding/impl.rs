@@ -129,6 +129,7 @@ impl SparseTextEmbedding {
             model,
             special_token_ids,
             token_id_to_idf,
+            run_options: None,
         }
     }
 
@@ -193,10 +194,11 @@ impl SparseTextEmbedding {
             let mut encoded = encode_batch(&self.tokenizer, inputs)?;
             let session_inputs = encoded.session_inputs(self.need_token_type_ids)?;
 
-            let outputs = self
-                .session
-                .run(session_inputs)
-                .map_err(|e| Error::OrtSession(e.to_string()))?;
+            let outputs = match &self.run_options {
+                Some(config) => self.session.run_with_options(session_inputs, &config.0),
+                None => self.session.run(session_inputs),
+            }
+            .map_err(|e| Error::OrtSession(e.to_string()))?;
 
             let embeddings = match self.model {
                 SparseModel::SPLADEPPV1 => {

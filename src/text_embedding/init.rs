@@ -223,6 +223,8 @@ pub struct TextEmbedding {
     pub(crate) need_token_type_ids: bool,
     pub(crate) quantization: QuantizationMode,
     pub(crate) output_key: Option<OutputKey>,
+    /// Run configuration every run of the session takes; see `set_run_config`.
+    pub(crate) run_options: Option<crate::execution_profile::RunConfig>,
 }
 
 #[cfg(test)]

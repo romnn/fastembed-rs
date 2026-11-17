@@ -1,8 +1,9 @@
-//! Fixed token shapes and session-owned CUDA allocator diagnostics.
+//! Fixed token shapes, run configuration and session-owned CUDA allocator diagnostics.
 
-use crate::{Error, TextEmbedding, TextRerank};
+use crate::{Error, SparseTextEmbedding, TextEmbedding, TextRerank};
 use ort::{
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
+    session::RunOptions,
     AsPointer,
 };
 use std::ffi::CStr;
@@ -21,6 +22,32 @@ pub struct CudaAllocatorStats {
     pub num_reserves: u64,
     /// Largest individual allocation in bytes.
     pub max_alloc_size: u64,
+}
+
+/// The run options every run of a session takes, built from its run configuration.
+pub(crate) struct RunConfig(pub(crate) RunOptions);
+
+impl std::fmt::Debug for RunConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("RunConfig").finish_non_exhaustive()
+    }
+}
+
+/// Run options holding every `(key, value)` entry of `config`, or `None` when it holds none, so a
+/// session without run configuration keeps the plain run.
+fn run_options<K: AsRef<str>, V: AsRef<str>>(
+    config: &[(K, V)],
+) -> crate::Result<Option<RunConfig>> {
+    if config.is_empty() {
+        return Ok(None);
+    }
+    let mut options = RunOptions::new().map_err(|e| Error::OrtSession(e.to_string()))?;
+    for (key, value) in config {
+        options
+            .set(key, value)
+            .map_err(|e| Error::OrtSession(e.to_string()))?;
+    }
+    Ok(Some(RunConfig(options)))
 }
 
 fn fixed_padding(tokenizer: &mut Tokenizer, length: usize) -> crate::Result<()> {
@@ -100,6 +127,21 @@ fn cuda_stats(session: &ort::session::Session) -> ort::Result<CudaAllocatorStats
 }
 
 impl TextEmbedding {
+    /// Set the ONNX Runtime run configuration entries every later run of the session takes,
+    /// replacing any set before; an empty `config` restores plain runs.
+    /// Example: `.set_run_config(&[("memory.enable_memory_arena_shrinkage", "gpu:0")])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if ONNX Runtime refuses an entry.
+    pub fn set_run_config<K: AsRef<str>, V: AsRef<str>>(
+        &mut self,
+        config: &[(K, V)],
+    ) -> crate::Result<()> {
+        self.run_options = run_options(config)?;
+        Ok(())
+    }
+
     /// Fix padding and truncation without changing pad IDs, special tokens or padding direction.
     ///
     /// # Errors
@@ -120,6 +162,21 @@ impl TextEmbedding {
 }
 
 impl TextRerank {
+    /// Set the ONNX Runtime run configuration entries every later run of the session takes,
+    /// replacing any set before; an empty `config` restores plain runs.
+    /// Example: `.set_run_config(&[("memory.enable_memory_arena_shrinkage", "gpu:0")])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if ONNX Runtime refuses an entry.
+    pub fn set_run_config<K: AsRef<str>, V: AsRef<str>>(
+        &mut self,
+        config: &[(K, V)],
+    ) -> crate::Result<()> {
+        self.run_options = run_options(config)?;
+        Ok(())
+    }
+
     /// Fix padding and complete query/document-pair truncation, preserving tokenizer semantics.
     ///
     /// # Errors
@@ -139,6 +196,23 @@ impl TextRerank {
     }
 }
 
+impl SparseTextEmbedding {
+    /// Set the ONNX Runtime run configuration entries every later run of the session takes,
+    /// replacing any set before; an empty `config` restores plain runs.
+    /// Example: `.set_run_config(&[("memory.enable_memory_arena_shrinkage", "gpu:0")])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if ONNX Runtime refuses an entry.
+    pub fn set_run_config<K: AsRef<str>, V: AsRef<str>>(
+        &mut self,
+        config: &[(K, V)],
+    ) -> crate::Result<()> {
+        self.run_options = run_options(config)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +221,31 @@ mod tests {
         processors::template::TemplateProcessing, PaddingDirection, PaddingParams,
         TruncationDirection, TruncationParams,
     };
+
+    #[test]
+    fn an_empty_run_config_keeps_plain_runs() -> crate::Result<()> {
+        assert!(run_options::<&str, &str>(&[])?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_config_sets_every_entry() -> crate::Result<()> {
+        let config = run_options(&[
+            ("memory.enable_memory_arena_shrinkage", "cpu:0"),
+            ("run.example", "1"),
+        ])?;
+        let Some(RunConfig(mut options)) = config else {
+            panic!("a non-empty run config builds run options");
+        };
+        assert_eq!(
+            options
+                .get("memory.enable_memory_arena_shrinkage")
+                .as_deref(),
+            Some("cpu:0")
+        );
+        assert_eq!(options.get("run.example").as_deref(), Some("1"));
+        Ok(())
+    }
 
     fn tokenizer() -> Result<Tokenizer, Box<dyn std::error::Error + Send + Sync>> {
         let model = WordLevel::builder()

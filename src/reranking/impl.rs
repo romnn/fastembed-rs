@@ -26,6 +26,7 @@ impl TextRerank {
             tokenizer,
             session,
             need_token_type_ids,
+            run_options: None,
         }
     }
 
@@ -157,10 +158,11 @@ impl TextRerank {
             let mut encoded = encode_batch(&self.tokenizer, inputs)?;
             let session_inputs = encoded.session_inputs(self.need_token_type_ids)?;
 
-            let outputs = self
-                .session
-                .run(session_inputs)
-                .map_err(|e| Error::OrtSession(e.to_string()))?;
+            let outputs = match &self.run_options {
+                Some(config) => self.session.run_with_options(session_inputs, &config.0),
+                None => self.session.run(session_inputs),
+            }
+            .map_err(|e| Error::OrtSession(e.to_string()))?;
             let outputs = outputs
                 .get("logits")
                 .ok_or_else(|| Error::OutputKeyMissing {
